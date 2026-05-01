@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .ingest import ingest
-from .analysis import compute_tool_stats, compute_sequence_stats, compute_findings
+from .analysis import compute_tool_stats, compute_sequence_stats, compute_findings, _tool_full_name
 from .output import render
 
 logger = logging.getLogger("claudenlos")
@@ -50,6 +50,18 @@ def main() -> None:
         help="Characters per token for result-size estimation (default: 3.5)",
     )
     parser.add_argument(
+        "--include-builtins",
+        action="store_true",
+        help="Include built-in Claude Code tools (Bash, Read, Edit, …) in the analysis.",
+    )
+    parser.add_argument(
+        "--min-count",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Exclude tools with fewer than N calls from analysis (default: 5)",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Set log level to DEBUG",
@@ -62,11 +74,10 @@ def main() -> None:
     if args.paths:
         paths = [Path(p).expanduser() for p in args.paths]
     else:
-        defaults = [Path("~/.claude/projects").expanduser()]
-        secondary = Path("~/.claude-secondary/projects").expanduser()
-        if secondary.is_dir():
-            defaults.append(secondary)
-        paths = [p for p in defaults if p.is_dir()]
+        paths = sorted(
+            p for p in Path("~").expanduser().glob(".claude*/projects")
+            if p.is_dir()
+        )
 
     if not paths:
         print("No project directories found.", file=sys.stderr)
@@ -101,11 +112,20 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    tool_stats = compute_tool_stats(store)
-    seq_stats = compute_sequence_stats(store)
+    calls = store.calls if args.include_builtins else [c for c in store.calls if c.server != "claude-code"]
+    tool_stats = compute_tool_stats(store, calls)
+
+    excluded_count = 0
+    if args.min_count > 1:
+        qualifying = {name for name, s in tool_stats.items() if s.n >= args.min_count}
+        excluded_count = len(tool_stats) - len(qualifying)
+        calls = [c for c in calls if _tool_full_name(c) in qualifying]
+        tool_stats = {k: v for k, v in tool_stats.items() if k in qualifying}
+
+    seq_stats = compute_sequence_stats(store, calls)
     findings = compute_findings(tool_stats, seq_stats, args.chars_per_token)
 
-    render(tool_stats, seq_stats, findings, args.chars_per_token)
+    render(tool_stats, seq_stats, findings, args.chars_per_token, excluded_count, args.min_count)
 
 
 if __name__ == "__main__":

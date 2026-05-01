@@ -11,14 +11,19 @@ def render(
     seq_stats: "SequenceStats",
     findings: list["Finding"],
     chars_per_token: float,
+    excluded_count: int = 0,
+    min_count: int = 0,
     out=None,
 ) -> None:
     if out is None:
         out = sys.stdout
 
     # ── Result Size Distribution ─────────────────────────────────────────────
-    print("## Result Size Distribution (chars)", file=out)
-    cols = ["tool", "n", "p25", "p50", "p75", "p95", "max", "est_tokens", "example_large", "example_error"]
+    header = "## Result Size Distribution (chars)"
+    if excluded_count > 0:
+        header += f"  ({excluded_count} tools with < {min_count} calls excluded)"
+    print(header, file=out)
+    cols = ["n", "p25", "p50", "p75", "p95", "max", "est_tokens", "tool"]
     print("\t".join(cols), file=out)
 
     by_tokens = sorted(tool_stats.values(), key=lambda s: s.est_tokens(chars_per_token), reverse=True)
@@ -29,7 +34,6 @@ def render(
             p25, p50, p75, p95, mx = s.pcts()
         et = s.est_tokens(chars_per_token)
         row = [
-            s.name,
             str(s.n),
             _fmt(p25),
             _fmt(p50),
@@ -37,8 +41,7 @@ def render(
             _fmt(p95),
             _fmt(mx),
             _fmt(et),
-            s.example_large,
-            s.example_error,
+            s.name,
         ]
         print("\t".join(row), file=out)
 
@@ -55,14 +58,15 @@ def render(
         rows_to_show = [t for t in tools if t in matrix]
 
         if rows_to_show:
-            header = ["from\\to"] + short
+            header = short + ["from\\to"]
             print("\t".join(header), file=out)
             for from_tool in rows_to_show:
                 row_map = matrix[from_tool]
-                row = [_tool_short_name(from_tool)]
+                row = []
                 for to_tool in tools:
                     prob = row_map.get(to_tool, 0.0)
                     row.append(f"{prob:.2f}" if prob > 0 else "")
+                row.append(_tool_short_name(from_tool))
                 print("\t".join(row), file=out)
 
     print(file=out)
@@ -70,4 +74,7 @@ def render(
     # ── Findings ─────────────────────────────────────────────────────────────
     print("## Findings", file=out)
     for f in findings:
-        print(f"{f.type}\t{f.description}\t{f.detail}", file=out)
+        row = [f.type, f.description, f.detail]
+        if f.example:
+            row.append(f.example)
+        print("\t".join(row), file=out)

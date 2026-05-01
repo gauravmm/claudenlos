@@ -62,9 +62,9 @@ class ToolStats:
         return p25, p50, p75, p95, float(max(self.result_chars))
 
 
-def compute_tool_stats(store: Store) -> dict[str, ToolStats]:
+def compute_tool_stats(store: Store, calls: list[ToolCall] | None = None) -> dict[str, ToolStats]:
     stats: dict[str, ToolStats] = {}
-    for call in store.calls:
+    for call in (calls if calls is not None else store.calls):
         name = _tool_full_name(call)
         s = stats.setdefault(name, ToolStats(name=name))
         s.n += 1
@@ -96,12 +96,11 @@ class SequenceStats:
     seq_lengths: list[int] = field(default_factory=list)
 
 
-def compute_sequence_stats(store: Store) -> SequenceStats:
+def compute_sequence_stats(store: Store, calls: list[ToolCall] | None = None) -> SequenceStats:
     ss = SequenceStats()
 
-    # Group calls by sequence_id
     by_seq: dict[int, list[ToolCall]] = defaultdict(list)
-    for call in store.calls:
+    for call in (calls if calls is not None else store.calls):
         by_seq[call.sequence_id].append(call)
 
     for seq_id, seq_calls in by_seq.items():
@@ -139,6 +138,7 @@ class Finding:
     description: str
     detail: str
     est_token_impact: float
+    example: str = ""
 
 
 def compute_findings(
@@ -152,8 +152,8 @@ def compute_findings(
     # Sort tools by estimated result tokens descending
     by_tokens = sorted(tool_stats.values(), key=lambda s: s.est_tokens(chars_per_token), reverse=True)
 
-    # high_result_volume: top-3 tools exceeding 10k est tokens
-    for s in by_tokens[:3]:
+    # high_result_volume: any tool exceeding 10k est tokens
+    for s in by_tokens:
         et = s.est_tokens(chars_per_token)
         if et > 10_000:
             findings.append(Finding(
@@ -161,6 +161,7 @@ def compute_findings(
                 description=s.name,
                 detail=f"est_tokens={_si(et)}",
                 est_token_impact=et,
+                example=s.example_large,
             ))
 
     # dominated_result: one tool > 50% of all tokens
@@ -173,6 +174,7 @@ def compute_findings(
                     description=s.name,
                     detail=f"frac={frac:.0%}",
                     est_token_impact=s.est_tokens(chars_per_token),
+                    example=s.example_large,
                 ))
 
     # high_variance_result: p95/p50 > 3.0 for n>=10
@@ -184,11 +186,12 @@ def compute_findings(
             findings.append(Finding(
                 type="high_variance_result",
                 description=s.name,
-                detail=f"p95/p50={p95/p50:.2f}  example={s.example_large}",
+                detail=f"p95/p50={p95/p50:.2f}",
                 est_token_impact=s.est_tokens(chars_per_token),
+                example=s.example_large,
             ))
 
-    # chained_calls: A→B > 0.70 with n>=5
+    # chained_calls: A→B > 0.80 with n>=5
     from_counts: dict[str, int] = defaultdict(int)
     for (a, b), cnt in seq_stats.transitions.items():
         from_counts[a] += cnt
@@ -197,8 +200,7 @@ def compute_findings(
         if total_from < 5:
             continue
         prob = cnt / total_from
-        if prob > 0.70:
-            # token impact: cost of the chained call times expected count
+        if prob > 0.80:
             b_stats = tool_stats.get(b)
             impact = b_stats.est_tokens(chars_per_token) if b_stats else float(cnt)
             findings.append(Finding(
@@ -206,6 +208,7 @@ def compute_findings(
                 description=f"{a} -> {b}",
                 detail=f"prob={prob:.2f}  n={cnt}",
                 est_token_impact=impact,
+                example=b_stats.example_large if b_stats else "",
             ))
 
     # high_retry_rate: retry rate > 0.20 for n>=5
@@ -221,6 +224,7 @@ def compute_findings(
                 description=name,
                 detail=f"retry_rate={rate:.0%}",
                 est_token_impact=impact,
+                example=s.example_error if s else "",
             ))
 
     # always_errors: error rate > 0.50 for n>=3
@@ -231,12 +235,16 @@ def compute_findings(
             findings.append(Finding(
                 type="always_errors",
                 description=s.name,
-                detail=f"error_rate={s.error_rate():.0%}  example={s.example_error}",
+                detail=f"error_rate={s.error_rate():.0%}",
                 est_token_impact=s.est_tokens(chars_per_token),
+                example=s.example_error,
             ))
 
     # expensive_model: >30% of calls to high-result-volume tool from Opus
-    for s in by_tokens[:3]:
+    for s in by_tokens:
+        et = s.est_tokens(chars_per_token)
+        if et <= 10_000:
+            break
         total_calls = s.n
         if total_calls == 0:
             continue
@@ -247,6 +255,7 @@ def compute_findings(
                 description=s.name,
                 detail=f"opus_frac={opus_calls/total_calls:.0%}",
                 est_token_impact=s.est_tokens(chars_per_token),
+                example=s.example_large,
             ))
 
     # single_call_sequences: >60% of sequences have exactly one call
@@ -260,9 +269,8 @@ def compute_findings(
                 est_token_impact=total_tokens * frac,
             ))
 
-    # Sort by impact, return top 5
     findings.sort(key=lambda f: f.est_token_impact, reverse=True)
-    return findings[:5]
+    return findings
 
 
 # ── Transition matrix ────────────────────────────────────────────────────────
