@@ -17,6 +17,7 @@ The tool is very simple, it accepts one or more `.claude/projects` directories a
     a. Distribution of tokens,
     b. Frequency of calling, and
     c. Total tokens spent on MCP calls and responses.
+    d. What were models used when the call was performed?
 
 2. Call sequence analysis
     a. A sequence is a set of tool calls that happen contiguously, without human input interleaving.
